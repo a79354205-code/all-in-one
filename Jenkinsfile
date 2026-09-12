@@ -1,56 +1,58 @@
 pipeline {
     agent any
-    
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
     environment {
         IMAGE_NAME = 'abdelrahman12345648484/flask-hello'
         DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
     }
 
     stages {
-        stage('1. Checkout Code') {
+        stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
-        stage('2. Repository Checksum') {
+        stage('Build') {
             steps {
-                script {
-                    sh 'git rev-parse HEAD > repo_checksum.txt'
-                    echo "Repository Checksum created successfully."
-                }
+                sh '''
+                    docker build \
+                        --tag "${IMAGE_NAME}:build-${BUILD_NUMBER}" \
+                        --tag "${IMAGE_NAME}:latest" \
+                        .
+                '''
             }
         }
 
-        stage('3. Build Docker Image') {
+        stage('Test') {
             steps {
-                script {
-                    sh "docker build -t ${IMAGE_NAME}:latest ."
-                }
+                sh '''
+                    docker run --rm "${IMAGE_NAME}:build-${BUILD_NUMBER}" \
+                        python -c "from hello import app; r = app.test_client().get('/'); assert r.status_code == 200; assert r.data == b'Hello, World!'"
+                '''
             }
         }
 
-        stage('4. Docker Hub Login & Tag/Push') {
+        stage('Push') {
             steps {
-                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", 
-                                                  usernameVariable: 'DOCKER_USER', 
-                                                  passwordVariable: 'DOCKER_PASS')]) {
-                    script {
-                        sh 'echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin'
-                        sh "docker tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${BUILD_NUMBER}"
-                        sh "docker push ${IMAGE_NAME}:${BUILD_NUMBER}"
-                        sh "docker push ${IMAGE_NAME}:latest"
-                    }
-                }
-            }
-        }
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKER_CREDENTIALS_ID}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_TOKEN'
+                )]) {
+                    sh '''
+                        echo "$DOCKER_TOKEN" | docker login \
+                            --username "$DOCKER_USER" \
+                            --password-stdin
 
-        stage('5. Run Docker Image') {
-            steps {
-                script {
-                    sh "docker stop my-running-app || true"
-                    sh "docker rm my-running-app || true"
-                    sh "docker run -d --name my-running-app -p 3001:5000 ${IMAGE_NAME}:${BUILD_NUMBER}"
+                        docker push "${IMAGE_NAME}:build-${BUILD_NUMBER}"
+                        docker push "${IMAGE_NAME}:latest"
+                    '''
                 }
             }
         }
@@ -58,7 +60,10 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline execution finished."
+            sh 'docker logout || true'
+        }
+        success {
+            echo "Published ${IMAGE_NAME}:build-${BUILD_NUMBER} and ${IMAGE_NAME}:latest"
         }
     }
 }
